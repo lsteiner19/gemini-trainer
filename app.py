@@ -74,8 +74,43 @@ if prompt:
     # Gemini konfigurieren (Nutzt 'gemini-pro' oder 'gemini-1.5-flash' je nach Verfügbarkeit)
     genai.configure(api_key=google_api_key)
     # Falls Flash wieder zickt, nutzen wir hier Pro:
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # ... (der Code davor bleibt gleich) ...
+    
+    # Wir konfigurieren Gemini
+    genai.configure(api_key=google_api_key)
+    
+    # HIER IST DIE ÄNDERUNG: Wir nehmen die "latest" Version
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        
+        with st.spinner("Ich plane..."):
+            response = model.generate_content(system_instruction)
+            text_response = response.text
+            # ... (Rest des Codes wie vorher) ...
+            
+            clean_json = text_response.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
 
+            status, info = upload_to_intervals(data["datum"], data["training_text"], data["titel"], intervals_id, intervals_key)
+
+            if status == 200:
+                reply = f"✅ **Erledigt!**\n\n{data['user_antwort']}\n\n*Eingetragen für: {data['datum']}*"
+            else:
+                reply = f"❌ Fehler bei Intervals: {status} - {info}"
+                
+            st.session_state.messages.append({"role": "model", "content": reply})
+            st.chat_message("assistant").write(reply)
+
+    except Exception as e:
+        # Falls das Modell nicht gefunden wird, zeigen wir eine bessere Fehlermeldung
+        st.error(f"Fehler: {e}")
+        st.warning("Versuche, verfügbare Modelle aufzulisten...")
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    st.write(f"- {m.name}")
+        except:
+            pass
     system_instruction = f"""
     Du bist ein professioneller Radsport-Coach.
     Heute ist der {datetime.today().strftime('%Y-%m-%d')}.
@@ -111,4 +146,5 @@ if prompt:
 
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
+
 
