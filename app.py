@@ -31,15 +31,26 @@ with st.sidebar:
 # --- 3. API Funktionen ---
 
 def get_activities(limit=10):
-    """Holt vergangene Aktivitäten"""
-    # Wir holen bewusst etwas mehr Daten
-    url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/activities?limit={limit}"
+    """Holt vergangene Aktivitäten der letzten 30 Tage"""
+    # FEHLER-FIX: Intervals braucht Datumsangaben, kein reines Limit
+    today = datetime.today().strftime('%Y-%m-%d')
+    start_date = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
+    
+    url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/activities?oldest={start_date}&newest={today}"
+    
     try:
         resp = requests.get(url, auth=('API_KEY', intervals_key))
         if resp.status_code == 200:
-            return resp.json()
+            # Wir sortieren sie sicherheitshalber und nehmen die neuesten
+            data = resp.json()
+            # Falls data leer ist, geben wir leere Liste zurück
+            if not data:
+                return []
+            # Neueste zuerst
+            return sorted(data, key=lambda x: x['start_date_local'], reverse=True)[:limit]
         else:
-            st.error(f"Fehler beim Laden der Aktivitäten: Code {resp.status_code}")
+            # WICHTIG: Wir geben jetzt den genauen Fehlertext aus, falls es wieder passiert
+            st.error(f"Fehler 422 Details: {resp.text}") 
             return []
     except Exception as e:
         st.error(f"Verbindungsfehler: {e}")
@@ -269,3 +280,4 @@ with tab2:
 
         st.session_state.messages.append({"role": "model", "content": final_text})
         st.chat_message("assistant").write(final_text)
+
