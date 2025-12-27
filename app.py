@@ -80,19 +80,18 @@ def create_event(payload):
 tab1, tab2 = st.tabs(["📊 Analyse & Karte", "💬 AI Coach (Sprache)"])
 
 # === TAB 1: ANALYSE ===
+# === TAB 1: ANALYSE (Repariert & Absturzsicher) ===
 with tab1:
     st.header("Vergangene Einheiten")
     if intervals_key and intervals_id:
         activities = get_activities(limit=15)
         
         if not activities:
-            st.warning("Keine Aktivitäten gefunden. Hast du Workouts in Intervals.icu hochgeladen?")
+            st.warning("Keine Aktivitäten gefunden. Prüfe deine ID und Key.")
         else:
             # Dropdown bauen
-            # Wir formatieren das Label schöner, damit man sieht was es ist
             act_options = {}
             for a in activities:
-                # Sicherstellen, dass Felder existieren
                 date = a.get('start_date_local', 'Unbekannt')[:10]
                 name = a.get('name', 'Unbenannt')
                 act_id = a.get('id')
@@ -103,44 +102,74 @@ with tab1:
             
             if selection:
                 current_id = act_options[selection]
-                # Daten holen
-                streams = get_streams(current_id)
+                
+                with st.spinner("Lade Daten..."):
+                    streams = get_streams(current_id)
                 
                 if streams:
+                    # Daten in ein Dictionary umwandeln
                     data = {s['type']: s['data'] for s in streams}
                     
+                    # 1. KARTE (GPS) - Jetzt mit Absturz-Sicherung!
+                    if 'latlng' in data and data['latlng']:
+                        try:
+                            # Wir prüfen, ob Daten da sind
+                            gps_data = data['latlng']
+                            if len(gps_data) > 0:
+                                # Pandas DataFrame erstellen
+                                lat_lon = pd.DataFrame(gps_data, columns=['lat', 'lon'])
+                                
+                                # Bereinigen: 0,0 Koordinaten rauswerfen
+                                lat_lon = lat_lon[(lat_lon['lat'] != 0) & (lat_lon['lon'] != 0)]
+                                
+                                if not lat_lon.empty:
+                                    st.map(lat_lon, color="#FF0000")
+                                else:
+                                    st.info("GPS Daten vorhanden, aber nur Nullen (Indoor?).")
+                        except ValueError:
+                            # Falls das Format nicht stimmt, ignorieren wir die Karte einfach
+                            st.warning("Konnte Karte nicht zeichnen (GPS-Datenformat fehlerhaft).")
+                        except Exception as e:
+                            st.warning(f"Karten-Fehler: {e}")
+
+                    # 2. DIAGRAMM (Watt/Puls)
                     if 'time' in data:
                         df = pd.DataFrame(data)
                         
-                        # Karte
-                        if 'latlng' in data:
-                            lat_lon = pd.DataFrame(data['latlng'], columns=['lat', 'lon'])
-                            # Filter 0-Werte
-                            lat_lon = lat_lon[(lat_lon['lat'] != 0) & (lat_lon['lon'] != 0)]
-                            st.map(lat_lon, color="#FF0000") # Rote Linie
-                        
-                        # Diagramm mit Zoom
                         st.subheader("Leistungsdaten")
-                        max_time = int(df['time'].max() / 60)
-                        zoom = st.slider("Zeitbereich (Minuten)", 0, max_time, (0, max_time))
-                        
-                        # Filtern
-                        mask = (df['time'] >= zoom[0]*60) & (df['time'] <= zoom[1]*60)
-                        df_zoom = df[mask]
-                        
-                        # Altair Chart
-                        chart_data = df_zoom.melt('time', var_name='Sensor', value_name='Wert')
-                        chart_data = chart_data[chart_data['Sensor'].isin(['heartrate', 'watts'])]
-                        
-                        c = alt.Chart(chart_data).mark_line().encode(
-                            x='time', y='Wert', color='Sensor', tooltip=['time', 'Wert']
-                        ).interactive()
-                        st.altair_chart(c, use_container_width=True)
+                        # Sicherstellen, dass 'time' existiert und nicht leer ist
+                        if not df.empty and 'time' in df.columns:
+                            max_time = int(df['time'].max() / 60)
+                            
+                            if max_time > 0:
+                                zoom = st.slider("Zeitbereich (Minuten)", 0, max_time, (0, max_time))
+                                # Filtern
+                                mask = (df['time'] >= zoom[0]*60) & (df['time'] <= zoom[1]*60)
+                                df_zoom = df[mask]
+                            else:
+                                df_zoom = df # Keine Zeitdaten -> alles zeigen
+                            
+                            # Altair Chart bauen
+                            # Nur Spalten nehmen, die es auch wirklich gibt
+                            available_sensors = [col for col in ['heartrate', 'watts', 'velocity_smooth'] if col in df_zoom.columns]
+                            
+                            if available_sensors:
+                                chart_data = df_zoom.melt('time', var_name='Sensor', value_name='Wert')
+                                chart_data = chart_data[chart_data['Sensor'].isin(available_sensors)]
+                                
+                                c = alt.Chart(chart_data).mark_line().encode(
+                                    x=alt.X('time', title='Sekunden'), 
+                                    y='Wert', 
+                                    color='Sensor', 
+                                    tooltip=['time', 'Wert']
+                                ).interactive()
+                                st.altair_chart(c, use_container_width=True)
+                            else:
+                                st.info("Keine Watt- oder Pulsdaten in dieser Datei.")
                     else:
-                        st.info("Diese Einheit hat keine Zeit-Daten (vielleicht manuell eingetragen?).")
+                        st.info("Diese Einheit hat keine Zeit-Achse.")
                 else:
-                    st.warning("Keine Detaildaten (GPS/Watt/Puls) für diese Einheit verfügbar.")
-
+                    st.warning("Keine Detaildaten für diese Einheit verfügbar.")
 # === TAB 2: AI COACH MIT SPRACHE & AUTO-KONTEXT ===
 with tab2:
     st.header("Sprich mit deinem Coach")
@@ -280,4 +309,5 @@ with tab2:
 
         st.session_state.messages.append({"role": "model", "content": final_text})
         st.chat_message("assistant").write(final_text)
+
 
