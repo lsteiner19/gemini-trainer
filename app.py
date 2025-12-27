@@ -7,16 +7,16 @@ import altair as alt
 from datetime import datetime, timedelta
 
 # --- 1. Grundeinstellungen ---
-st.set_page_config(page_title="Mein Pro-Coach", page_icon="🚴", layout="wide")
-st.title("🚴 Mein AI Performance Center")
+st.set_page_config(page_title="Mein AI Coach", page_icon="🎙️", layout="wide")
+st.title("🎙️ Mein sprechender Coach")
 
-# --- 2. Keys automatisch laden ---
+# --- 2. Keys laden ---
 with st.sidebar:
-    st.header("Einstellungen")
+    st.header("⚙️ Setup")
     if "GOOGLE_API_KEY" in st.secrets:
         google_api_key = st.secrets["GOOGLE_API_KEY"]
     else:
-        google_api_key = st.text_input("Google API Key", type="password")
+        google_api_key = st.text_input("Google Key", type="password")
 
     if "INTERVALS_ID" in st.secrets:
         intervals_id = st.secrets["INTERVALS_ID"]
@@ -28,23 +28,31 @@ with st.sidebar:
     else:
         intervals_key = st.text_input("Intervals API Key", type="password")
 
-# --- 3. Komplexe API Funktionen ---
+# --- 3. API Funktionen ---
 
-def get_activities(limit=5):
-    """Holt die letzten durchgeführten Aktivitäten"""
+def get_activities(limit=10):
+    """Holt vergangene Aktivitäten"""
+    # Wir holen bewusst etwas mehr Daten
     url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/activities?limit={limit}"
-    resp = requests.get(url, auth=('API_KEY', intervals_key))
-    return resp.json() if resp.status_code == 200 else []
+    try:
+        resp = requests.get(url, auth=('API_KEY', intervals_key))
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            st.error(f"Fehler beim Laden der Aktivitäten: Code {resp.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Verbindungsfehler: {e}")
+        return []
 
 def get_streams(activity_id):
-    """Holt die Sekunden-Daten (GPS, Puls, Watt) für eine Einheit"""
-    # Wir fragen explizit nach latlng (GPS), heartrate, watts, velocity_smooth
-    url = f"https://intervals.icu/api/v1/activity/{activity_id}/streams?types=latlng,heartrate,watts,velocity_smooth,time"
+    """Holt GPS und Werte"""
+    url = f"https://intervals.icu/api/v1/activity/{activity_id}/streams?types=latlng,heartrate,watts,time"
     resp = requests.get(url, auth=('API_KEY', intervals_key))
     return resp.json() if resp.status_code == 200 else []
 
-def get_future_events(days=90):
-    """Holt geplante Trainings UND Rennen"""
+def get_future_events(days=21):
+    """Holt Zukunft für Auto-Kontext"""
     today = datetime.today().strftime('%Y-%m-%d')
     future = (datetime.today() + timedelta(days=days)).strftime('%Y-%m-%d')
     url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/events?oldest={today}&newest={future}"
@@ -56,175 +64,208 @@ def create_event(payload):
     resp = requests.post(url, json=payload, auth=('API_KEY', intervals_key))
     return resp.status_code, resp.text
 
-# --- 4. Dashboard & Analyse Bereich ---
+# --- 4. Layout ---
 
-tab1, tab2 = st.tabs(["📊 Analyse & Karte", "💬 Planung & Coach"])
+tab1, tab2 = st.tabs(["📊 Analyse & Karte", "💬 AI Coach (Sprache)"])
 
+# === TAB 1: ANALYSE ===
 with tab1:
-    st.header("Deep Dive Analyse")
+    st.header("Vergangene Einheiten")
     if intervals_key and intervals_id:
-        activities = get_activities(limit=10)
-        if activities:
-            # Dropdown zur Auswahl der Aktivität
-            opts = {f"{a['start_date_local'][:10]} - {a['name']}": a['id'] for a in activities}
-            selection = st.selectbox("Wähle eine Einheit:", list(opts.keys()))
+        activities = get_activities(limit=15)
+        
+        if not activities:
+            st.warning("Keine Aktivitäten gefunden. Hast du Workouts in Intervals.icu hochgeladen?")
+        else:
+            # Dropdown bauen
+            # Wir formatieren das Label schöner, damit man sieht was es ist
+            act_options = {}
+            for a in activities:
+                # Sicherstellen, dass Felder existieren
+                date = a.get('start_date_local', 'Unbekannt')[:10]
+                name = a.get('name', 'Unbenannt')
+                act_id = a.get('id')
+                label = f"{date}: {name}"
+                act_options[label] = act_id
+            
+            selection = st.selectbox("Wähle eine Einheit zur Analyse:", list(act_options.keys()))
             
             if selection:
-                act_id = opts[selection]
-                
-                with st.spinner("Lade GPS und Sensordaten..."):
-                    streams = get_streams(act_id)
+                current_id = act_options[selection]
+                # Daten holen
+                streams = get_streams(current_id)
                 
                 if streams:
-                    # Daten in Pandas DataFrame umwandeln
-                    data = {}
-                    for s in streams:
-                        data[s['type']] = s['data']
+                    data = {s['type']: s['data'] for s in streams}
                     
-                    # DataFrame erstellen (nur wenn Zeitdaten da sind)
                     if 'time' in data:
                         df = pd.DataFrame(data)
                         
-                        # GPS Daten aufbereiten (Intervals liefert [lat, lon] als Liste)
+                        # Karte
                         if 'latlng' in data:
-                            # Wir splitten die Liste in zwei Spalten für st.map
                             lat_lon = pd.DataFrame(data['latlng'], columns=['lat', 'lon'])
-                            # Bereinigen (0,0 Koordinaten entfernen)
+                            # Filter 0-Werte
                             lat_lon = lat_lon[(lat_lon['lat'] != 0) & (lat_lon['lon'] != 0)]
-                            
-                            st.subheader("🗺️ Die Strecke")
-                            st.map(lat_lon)
-
-                        # Filter: "Nur die ersten X Minuten"
-                        st.divider()
-                        st.subheader("📈 Werte-Verlauf")
+                            st.map(lat_lon, color="#FF0000") # Rote Linie
                         
-                        max_min = int(df['time'].max() / 60)
-                        range_min = st.slider("Zeitfenster (Minuten):", 0, max_min, (0, max_min))
+                        # Diagramm mit Zoom
+                        st.subheader("Leistungsdaten")
+                        max_time = int(df['time'].max() / 60)
+                        zoom = st.slider("Zeitbereich (Minuten)", 0, max_time, (0, max_time))
                         
-                        # Filtern basierend auf Sekunden
-                        start_sec = range_min[0] * 60
-                        end_sec = range_min[1] * 60
-                        df_filtered = df[(df['time'] >= start_sec) & (df['time'] <= end_sec)]
+                        # Filtern
+                        mask = (df['time'] >= zoom[0]*60) & (df['time'] <= zoom[1]*60)
+                        df_zoom = df[mask]
                         
-                        # Diagramm zeichnen (Puls & Watt)
-                        chart_data = df_filtered.melt('time', var_name='Sensor', value_name='Wert')
-                        # Wir filtern nur Puls und Watt für die Grafik
+                        # Altair Chart
+                        chart_data = df_zoom.melt('time', var_name='Sensor', value_name='Wert')
                         chart_data = chart_data[chart_data['Sensor'].isin(['heartrate', 'watts'])]
                         
-                        chart = alt.Chart(chart_data).mark_line().encode(
-                            x=alt.X('time', title='Sekunden'),
-                            y='Wert',
-                            color='Sensor',
-                            tooltip=['time', 'Wert', 'Sensor']
+                        c = alt.Chart(chart_data).mark_line().encode(
+                            x='time', y='Wert', color='Sensor', tooltip=['time', 'Wert']
                         ).interactive()
-                        
-                        st.altair_chart(chart, use_container_width=True)
+                        st.altair_chart(c, use_container_width=True)
                     else:
-                        st.warning("Keine Zeit-Streams gefunden.")
+                        st.info("Diese Einheit hat keine Zeit-Daten (vielleicht manuell eingetragen?).")
                 else:
-                    st.warning("Keine Detaildaten (Streams) für diese Aktivität verfügbar.")
+                    st.warning("Keine Detaildaten (GPS/Watt/Puls) für diese Einheit verfügbar.")
 
+# === TAB 2: AI COACH MIT SPRACHE & AUTO-KONTEXT ===
 with tab2:
-    st.header("AI Coach: Planung & Strategie")
+    st.header("Sprich mit deinem Coach")
     
-    # Context laden
-    if st.button("📅 Kalender & Rennen scannen"):
-        with st.spinner("Analysiere Saisonplanung..."):
-            future_events = get_future_events()
-            st.session_state['events_context'] = future_events
-            st.success(f"{len(future_events)} Einträge geladen (Rennen & Trainings).")
-
-    # Chat Interface
+    # 1. Chat History initialisieren
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "model", "content": "Ich bin bereit. Sag mir 'Ich bin krank' oder 'Erstelle Plan für mein Rennen'."}]
+        st.session_state.messages = [{"role": "model", "content": "Ich höre zu. Drücke auf 'Aufnahme' oder schreibe mir."}]
 
     for msg in st.session_state.messages:
         role = "assistant" if msg["role"] == "model" else msg["role"]
         st.chat_message(role).write(msg["content"])
 
-    prompt = st.chat_input("Nachricht an den Coach...")
+    # 2. INPUT: Entweder Audio ODER Text
+    col_audio, col_text = st.columns([1, 4])
+    with col_audio:
+        audio_val = st.audio_input("🎙️ Aufnahme")
+    with col_text:
+        text_val = st.chat_input("Nachricht tippen...")
 
-    if prompt:
+    # Logik: Was wurde eingegeben?
+    user_input = None
+    is_audio = False
+
+    if audio_val:
+        user_input = audio_val # Das ist eine Datei (Bytes)
+        is_audio = True
+    elif text_val:
+        user_input = text_val
+        is_audio = False
+
+    # 3. VERARBEITUNG
+    if user_input:
         if not google_api_key:
-            st.error("Key fehlt!")
+            st.error("Bitte API Key eingeben!")
             st.stop()
 
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        st.chat_message("user").write(prompt)
+        # A) Anzeige im Chat
+        if is_audio:
+            st.session_state.messages.append({"role": "user", "content": "🎤 *Audio-Nachricht gesendet*"})
+            with st.chat_message("user"):
+                st.audio(user_input)
+        else:
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            st.chat_message("user").write(user_input)
 
-        # Kontext aufbauen
-        context_str = "Keine Kalenderdaten geladen."
-        if 'events_context' in st.session_state:
-            # Wir filtern die Daten, damit der Prompt nicht zu riesig wird
-            simple_events = []
-            for e in st.session_state['events_context']:
-                simple_events.append({
-                    "date": e['start_date_local'][:10],
-                    "name": e.get('name'),
-                    "category": e.get('category'), # WORKOUT oder RACE
-                    "type": e.get('type')
-                })
-            context_str = json.dumps(simple_events)
+        # B) AUTO-KONTEXT LADEN
+        # Wir prüfen nur bei Text auf Keywords. Bei Audio laden wir zur Sicherheit IMMER den Kontext, 
+        # weil wir den Text ja noch nicht kennen.
+        context_str = "Kein Kalender-Kontext."
+        
+        should_load_calendar = False
+        
+        if is_audio:
+            should_load_calendar = True # Bei Audio wissen wir nicht was kommt -> sicherheitshalber laden
+        elif isinstance(user_input, str):
+            # Schlüsselwörter Check
+            keywords = ["plan", "kalender", "woche", "morgen", "übermorgen", "rennen", "training", "wann", "freitag", "samstag", "sonntag", "montag"]
+            if any(word in user_input.lower() for word in keywords):
+                should_load_calendar = True
+        
+        if should_load_calendar:
+            with st.status("🔍 Prüfe Kalender...", expanded=False) as status:
+                events = get_future_events(days=14)
+                # Daten vereinfachen für die KI
+                simple_ev = [{"date": e['start_date_local'][:10], "name": e['name'], "cat": e.get('category')} for e in events]
+                context_str = f"GEPLANTER KALENDER (Nächste 14 Tage): {json.dumps(simple_ev)}"
+                status.update(label="📅 Kalender-Daten automatisch geladen!", state="complete")
+
+        # C) KI ANFRAGE
+        genai.configure(api_key=google_api_key)
+        # Wir nutzen Gemini 2.0 Flash (kann Audio UND Text)
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         system_instruction = f"""
-        Du bist ein Elite-Radsport-Coach. Heute: {datetime.today().strftime('%Y-%m-%d')}.
+        Du bist ein Radsport-Coach. Datum: {datetime.today().strftime('%Y-%m-%d')}.
         
-        SITUATION DES ATHLETEN (Kommende Events):
+        HINTERGRUND-WISSEN:
         {context_str}
         
-        DEINE AUFGABEN:
-        1. **Planung:** Wenn ein Rennen ansteht, plane rückwärts (Tapering, Build-Phase).
-        2. **Krankheit:** Wenn der User sagt "Ich bin krank", schlage vor, die nächsten Trainings zu löschen oder in "Ruhe" zu ändern.
-        3. **Rennen eintragen:** Wenn der User sagt "Neues Rennen am...", erstelle ein Event mit category='RACE'.
+        AUFGABE:
+        Analysiere die Anfrage (Text oder Audio).
+        - Wenn der User ein Training will -> JSON (action: create).
+        - Wenn der User krank ist -> JSON (action: create -> Ruhe/Note eintragen).
+        - Sonst -> Antworte hilfreich als Text.
         
-        OUTPUT FORMAT (WICHTIG):
-        Antworte IMMER im JSON-Format.
-        
-        Wenn du nur antwortest:
-        {{ "action": "chat", "text": "Deine Antwort..." }}
-        
-        Wenn du ein Training oder Rennen erstellst:
-        {{ 
-          "action": "create", 
-          "category": "WORKOUT" (oder "RACE"),
-          "datum": "YYYY-MM-DD", 
-          "titel": "...", 
-          "beschreibung": "...",
+        FORMAT FÜR AKTIONEN (JSON):
+        {{
+          "action": "create",
+          "category": "WORKOUT" (oder "NOTE"),
+          "datum": "YYYY-MM-DD",
+          "titel": "Titel",
+          "beschreibung": "Details",
           "text": "Antwort an User"
         }}
         """
 
-        genai.configure(api_key=google_api_key)
         try:
-            model = genai.GenerativeModel('gemini-2.0-flash') # Oder 'gemini-3-flash-preview'
-            
-            with st.spinner("Coach arbeitet..."):
-                response = model.generate_content(system_instruction + f"\nUSER: {prompt}")
-                clean_json = response.text.replace("```json", "").replace("```", "").strip()
-                try:
-                    data = json.loads(clean_json)
-                    
-                    if data.get("action") == "create":
-                        # Payload bauen
-                        payload = {
-                            "category": data.get("category", "WORKOUT"),
-                            "start_date_local": f"{data['datum']}T09:00:00",
-                            "name": data['titel'],
-                            "description": data.get("beschreibung", ""),
-                            "type": "Ride"
-                        }
-                        status, txt = create_event(payload)
-                        reply = f"✅ **Eintrag erstellt:** {data['titel']} am {data['datum']}\n\n{data['text']}"
-                    
-                    else:
-                        reply = data.get("text", "Keine Antwort.")
+            with st.spinner("Coach hört zu & denkt nach..."):
+                # Wir bauen die Prompt-Liste
+                prompt_parts = [system_instruction]
+                
+                if is_audio:
+                    prompt_parts.append("Hier ist die Audio-Anfrage des Users:")
+                    prompt_parts.append(user_input) # Audio direkt an Gemini!
+                else:
+                    prompt_parts.append(f"User Anfrage: {user_input}")
 
-                except json.JSONDecodeError:
-                    reply = response.text # Fallback falls kein JSON
+                response = model.generate_content(prompt_parts)
+                clean_reply = response.text.replace("```json", "").replace("```", "").strip()
+
+                # JSON Parsen versuchen
+                final_text = clean_reply
+                try:
+                    if "{" in clean_reply: # Nur parsen wenn es wie JSON aussieht
+                        data = json.loads(clean_json)
+                        if data.get("action") == "create":
+                            payload = {
+                                "category": data.get("category", "WORKOUT"),
+                                "start_date_local": f"{data['datum']}T09:00:00",
+                                "name": data['titel'],
+                                "description": data.get("beschreibung", ""),
+                                "type": "Ride"
+                            }
+                            # Senden
+                            code, txt = create_event(payload)
+                            if code == 200:
+                                final_text = f"✅ **Ausgeführt:** {data['titel']} am {data['datum']}\n\n{data.get('text', '')}"
+                            else:
+                                final_text = f"❌ Fehler bei Intervals: {txt}"
+                        elif "text" in data:
+                             final_text = data["text"]
+                except:
+                    pass # Wenn kein JSON, einfach Text ausgeben
 
         except Exception as e:
-            reply = f"Fehler: {e}"
+            final_text = f"Fehler: {e}"
 
-        st.session_state.messages.append({"role": "model", "content": reply})
-        st.chat_message("assistant").write(reply)
+        st.session_state.messages.append({"role": "model", "content": final_text})
+        st.chat_message("assistant").write(final_text)
