@@ -57,7 +57,7 @@ if prompt:
 
     # Gemini vorbereiten
     genai.configure(api_key=google_api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-pro')
 
     # Der Befehl an die KI (System Prompt)
     system_instruction = f"""
@@ -97,4 +97,5 @@ if prompt:
 
     # Antwort anzeigen und speichern
     st.session_state.messages.append({"role": "model", "content": reply})
+
     st.chat_message("assistant").write(reply)
