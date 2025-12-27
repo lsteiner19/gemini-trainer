@@ -3,13 +3,14 @@ import google.generativeai as genai
 import requests
 import json
 import pandas as pd
+import re
 from datetime import datetime, timedelta
 
-# --- 1. SETUP & CONFIG ---
-st.set_page_config(page_title="AI Coach Lite", page_icon="⚡", layout="centered")
-st.title("⚡ Smart Coach Chat")
+# --- 1. SETUP ---
+st.set_page_config(page_title="AI Coach", page_icon="🚴", layout="centered")
+st.title("🚴 Smart Coach Chat")
 
-# Keys aus Secrets laden
+# Keys laden
 if "GOOGLE_API_KEY" in st.secrets:
     google_api_key = st.secrets["GOOGLE_API_KEY"]
 else:
@@ -25,68 +26,54 @@ if "INTERVALS_KEY" in st.secrets:
 else:
     intervals_key = st.text_input("Intervals API Key", type="password")
 
-# Session State für den "Entwurf-Modus"
+# --- SESSION STATE INITIALISIEREN ---
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "model", "content": "Hi! Ich bin bereit. Sag mir, was wir planen sollen."}]
 if "pending_plan" not in st.session_state:
     st.session_state.pending_plan = None
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "model", "content": "Hi! Ich bin bereit. Ich lade Daten nur, wenn du danach fragst."}]
+# WICHTIG: Damit Audio nicht doppelt gesendet wird
+if "last_processed_audio_id" not in st.session_state:
+    st.session_state.last_processed_audio_id = None
 
-# --- 2. API FUNKTIONEN (Nur auf Abruf) ---
+# --- 2. HILFSFUNKTIONEN ---
 
-def fetch_past_activities(days=7):
-    """Holt nur die Basis-Daten der letzten X Tage"""
-    today = datetime.today().strftime('%Y-%m-%d')
-    start_date = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/activities?oldest={start_date}&newest={today}"
+def extract_json(text):
+    """Findet JSON in einem Text, auch wenn die KI davor noch etwas schreibt."""
     try:
-        resp = requests.get(url, auth=('API_KEY', intervals_key))
-        if resp.status_code == 200:
-            data = resp.json()
-            # Wir reduzieren die Datenmenge für die KI
-            simplified = []
-            for a in data:
-                simplified.append({
-                    "date": a['start_date_local'][:10],
-                    "name": a.get('name'),
-                    "duration_m": int(a.get('moving_time', 0)/60),
-                    "avg_hr": a.get('average_heartrate'),
-                    "load": a.get('training_load')
-                })
-            return simplified
-        return []
+        # Suche nach dem ersten '{' und dem letzten '}'
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        if start != -1 and end != -1:
+            json_str = text[start:end]
+            return json.loads(json_str)
+        return None
     except:
-        return []
+        return None
 
-def fetch_future_events(days=30):
-    """Holt geplante Events der Zukunft"""
+def fetch_data(endpoint, days=7, is_future=False):
+    """Generische Funktion zum Daten holen"""
     today = datetime.today().strftime('%Y-%m-%d')
-    future = (datetime.today() + timedelta(days=days)).strftime('%Y-%m-%d')
-    url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/events?oldest={today}&newest={future}"
+    if is_future:
+        date_param = f"oldest={today}&newest={(datetime.today() + timedelta(days=days)).strftime('%Y-%m-%d')}"
+    else:
+        date_param = f"oldest={(datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')}&newest={today}"
+        
+    url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/{endpoint}?{date_param}"
     try:
         resp = requests.get(url, auth=('API_KEY', intervals_key))
         if resp.status_code == 200:
-            data = resp.json()
-            simplified = []
-            for e in data:
-                simplified.append({
-                    "date": e['start_date_local'][:10],
-                    "name": e.get('name'),
-                    "category": e.get('category'),
-                    "type": e.get('type')
-                })
-            return simplified
+            return resp.json()
         return []
     except:
         return []
 
 def upload_workout(workout_data):
-    """Lädt ein einzelnes Workout hoch"""
+    """Lädt ein Workout hoch"""
     url = f"https://intervals.icu/api/v1/athlete/{intervals_id}/events"
-    # Datum fixen (Zeit anhängen)
     date_str = workout_data['datum']
     if "T" not in date_str:
         date_str = f"{date_str}T09:00:00"
-        
+    
     payload = {
         "category": "WORKOUT",
         "start_date_local": date_str,
@@ -100,156 +87,159 @@ def upload_workout(workout_data):
     except:
         return False
 
-# --- 3. CHAT LOGIK ---
+# --- 3. CHAT GUI ---
 
-# Chatverlauf anzeigen
+# Alten Chatverlauf anzeigen
 for msg in st.session_state.messages:
     role = "assistant" if msg["role"] == "model" else msg["role"]
     st.chat_message(role).write(msg["content"])
 
-# INPUT (Audio oder Text)
-col_audio, col_text = st.columns([1, 5])
-with col_audio:
-    audio_val = st.audio_input("🎙️")
-with col_text:
-    text_val = st.chat_input("Nachricht...")
+# EINGABE-LOGIK
+# Wir trennen Audio und Text strikt, um den Loop zu verhindern
+input_container = st.container()
+with input_container:
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        audio_val = st.audio_input("🎙️")
+    with col2:
+        text_val = st.chat_input("Nachricht tippen...")
 
-user_input = None
-if audio_val:
-    user_input = audio_val
-    is_audio = True
-elif text_val:
-    user_input = text_val
-    is_audio = False
+# Bestimmen, was verarbeitet werden soll
+user_content = None
+input_type = None # 'text' oder 'audio'
+
+# Check 1: Wurde Text gesendet?
+if text_val:
+    user_content = text_val
+    input_type = 'text'
+
+# Check 2: Wurde Audio gesendet? (Und ist es NEUES Audio?)
+elif audio_val:
+    # Wir nutzen die ID der Datei, um zu prüfen, ob wir das schon kennen
+    current_audio_id = audio_val.file_id if hasattr(audio_val, 'file_id') else audio_val.size
+    
+    if current_audio_id != st.session_state.last_processed_audio_id:
+        user_content = audio_val
+        input_type = 'audio'
+        st.session_state.last_processed_audio_id = current_audio_id # Merken!
+    else:
+        # Das Audio liegt da noch rum, aber wir haben es schon bearbeitet -> Ignorieren
+        pass
 
 # --- 4. VERARBEITUNG ---
-if user_input:
-    if not google_api_key:
-        st.error("Kein API Key!")
+
+if user_content:
+    if not google_api_key or not intervals_key:
+        st.error("Bitte API Keys eingeben!")
         st.stop()
 
-    # 1. User Input anzeigen
-    if is_audio:
-        st.session_state.messages.append({"role": "user", "content": "🎙️ *Audio Anfrage*"})
+    # User Nachricht anzeigen
+    if input_type == 'audio':
+        st.session_state.messages.append({"role": "user", "content": "🎙️ *Audio Nachricht*"})
         with st.chat_message("user"):
-            st.audio(user_input)
+            st.audio(user_content)
     else:
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        st.chat_message("user").write(user_input)
+        st.session_state.messages.append({"role": "user", "content": user_content})
+        st.chat_message("user").write(user_content)
 
-    # 2. PRÜFEN: "Passt" der User den Entwurf?
-    # Wenn ein Entwurf wartet und der User sagt "Passt", "Ja", "Hochladen"
-    if st.session_state.pending_plan and not is_audio and any(w in text_val.lower() for w in ["passt", "ja", "hochladen", "ok", "mach es"]):
-        with st.spinner(f"Lade {len(st.session_state.pending_plan)} Einheiten hoch..."):
-            count = 0
-            for wo in st.session_state.pending_plan:
-                if upload_workout(wo):
-                    count += 1
-            
-            success_msg = f"✅ Fertig! {count} Trainings wurden in deinen Kalender übertragen."
-            st.session_state.messages.append({"role": "model", "content": success_msg})
-            st.chat_message("assistant").write(success_msg)
-            st.session_state.pending_plan = None # Entwurf löschen
-            st.stop() # Hier aufhören
+    # CHECK: Will der User den Entwurf speichern?
+    if st.session_state.pending_plan and input_type == 'text':
+        if any(w in user_content.lower() for w in ["passt", "ja", "hochladen", "ok", "mach"]):
+            with st.spinner("Lade Trainings hoch..."):
+                count = 0
+                for w in st.session_state.pending_plan:
+                    if upload_workout(w): count += 1
+                msg = f"✅ {count} Einheiten erfolgreich gespeichert!"
+                st.session_state.messages.append({"role": "model", "content": msg})
+                st.chat_message("assistant").write(msg)
+                st.session_state.pending_plan = None
+                st.stop()
 
-    # 3. CONTEXT LADEN (Nur bei Bedarf!)
-    context_text = ""
-    status_label = []
+    # KONTEXT LADEN (Datensparsam)
+    context_str = ""
+    # Einfache Keyword-Suche (bei Audio nehmen wir an, wir brauchen Kontext, um sicher zu sein)
+    trigger_text = "analyse plan rennen" if input_type == 'audio' else user_content.lower()
     
-    # Text für Analyse vorbereiten (Audio kann man schwerer prüfen, daher laden wir da ggf. mehr)
-    check_text = "analyse plan rennen zukunft" if is_audio else text_val.lower()
+    status_infos = []
+    
+    if any(k in trigger_text for k in ["analyse", "vergangenheit", "war ich", "letzte"]):
+        with st.spinner("Lade Historie..."):
+            data = fetch_data("activities", days=7, is_future=False)
+            # Daten vereinfachen
+            simple_data = [{"date": d['start_date_local'][:10], "name": d['name'], "load": d.get('training_load')} for d in data]
+            context_str += f"HISTORIE (7 Tage): {json.dumps(simple_data)}\n"
+            status_infos.append("Historie")
 
-    # A) Vergangenheit laden?
-    if any(w in check_text for w in ["analyse", "letzten", "vergangenheit", "gemacht", "war ich"]):
-        with st.spinner("Lade vergangene Aktivitäten..."):
-            past_data = fetch_past_activities(days=7) # Standard 7 Tage, KI kann mehr fordern wenn nötig
-            context_text += f"\nVERGANGENHEIT (Letzte 7 Tage): {json.dumps(past_data)}"
-            status_label.append("Historie geladen")
-
-    # B) Zukunft laden?
-    if any(w in check_text for w in ["plan", "zukunft", "rennen", "krank", "ausfallen", "verschieben"]):
+    if any(k in trigger_text for k in ["plan", "rennen", "zukunft", "krank", "nächste"]):
         with st.spinner("Lade Kalender..."):
-            # Wenn User sagt "Plan für 2 Monate", brauchen wir evtl. einen längeren Horizont
-            future_days = 60 if "monat" in check_text else 14
-            future_data = fetch_future_events(days=future_days)
-            context_text += f"\nZUKUNFT (Kommende Events): {json.dumps(future_data)}"
-            status_label.append("Kalender geladen")
+            days = 60 if "monat" in trigger_text else 14
+            data = fetch_data("events", days=days, is_future=True)
+            simple_data = [{"date": d['start_date_local'][:10], "name": d['name'], "cat": d.get('category')} for d in data]
+            context_str += f"KALENDER ({days} Tage): {json.dumps(simple_data)}\n"
+            status_infos.append("Zukunft")
 
-    if status_label:
-        st.caption(f"ℹ️ Info: {' & '.join(status_label)}")
+    if status_infos:
+        st.caption(f"ℹ️ Daten geladen: {', '.join(status_infos)}")
 
-    # 4. KI ANFRAGE
+    # KI ANFRAGE
     genai.configure(api_key=google_api_key)
-    system_instruction = f"""
-    Du bist ein effizienter Radsport-Coach.
-    Datum: {datetime.today().strftime('%Y-%m-%d')}.
     
-    KONTEXT DATEN:
-    {context_text}
+    system_prompt = f"""
+    Du bist ein Coach. Datum: {datetime.today().strftime('%Y-%m-%d')}.
+    KONTEXT: {context_str}
     
-    DEINE REGELN:
-    1. **Analyse:** Wenn der User nach Analyse fragt, gib eine saubere Tabelle (Markdown) zurück.
-    2. **Planung (Vorschau):** Wenn du Trainings erstellen sollst, lade sie NICHT sofort hoch.
-       Gib stattdessen JSON zurück mit `action: propose`. Dann zeigen wir sie dem User erst.
-    3. **Einzelnes Training:** Auch hier erst `action: propose`.
-    4. **Krankheit/Änderung:** Schlage Änderungen vor.
+    AUFGABE:
+    1. Wenn du planst: Erstelle JSON mit `action: propose`.
+    2. Wenn du analysierst: Antworte normal (nutze Markdown-Tabellen).
     
-    OUTPUT FORMAT (JSON für Planung, sonst Text):
-    Wenn du Trainings planst:
+    FORMAT FÜR PLANUNG (JSON):
     {{
       "action": "propose",
-      "summary": "Kurze Zusammenfassung (z.B. 'Hier ist der Plan für Woche 1...')",
+      "text": "Kurze Erklärung...",
       "workouts": [
-        {{ "datum": "YYYY-MM-DD", "titel": "...", "beschreibung": "..." }},
         {{ "datum": "YYYY-MM-DD", "titel": "...", "beschreibung": "..." }}
       ]
     }}
-    
-    Wenn du nur analysierst/antwortest:
-    Einfacher Text (nutze Markdown Tabellen für Daten).
     """
-
+    
     try:
-        model = genai.GenerativeModel('gemini-flash-latest') # 1.5 Flash ist super stabil & günstig
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        prompt_content = [system_instruction]
-        if is_audio:
-            prompt_content.append({"mime_type": user_input.type, "data": user_input.read()})
+        parts = [system_prompt]
+        if input_type == 'audio':
+            parts.append({"mime_type": user_content.type, "data": user_content.read()})
         else:
-            prompt_content.append(f"User: {text_val}")
-
-        with st.spinner("..."):
-            response = model.generate_content(prompt_content)
-            reply_text = response.text.strip()
+            parts.append(f"User: {user_content}")
             
-            # JSON Check
-            if "action" in reply_text and "propose" in reply_text:
-                # JSON bereinigen
-                clean_json = reply_text.replace("```json", "").replace("```", "").strip()
-                try:
-                    data = json.loads(clean_json)
-                    
-                    # ENTWURF SPEICHERN
-                    st.session_state.pending_plan = data['workouts']
-                    
-                    # Tabelle anzeigen
-                    st.session_state.messages.append({"role": "model", "content": data['summary']})
-                    st.chat_message("assistant").write(data['summary'])
-                    
-                    # DataFrame für Vorschau
-                    df = pd.DataFrame(data['workouts'])
+        with st.spinner("Coach denkt nach..."):
+            response = model.generate_content(parts)
+            reply = response.text
+            
+            # Versuchen, JSON zu finden
+            json_data = extract_json(reply)
+            
+            if json_data and json_data.get("action") == "propose":
+                # ES IST EIN PLAN -> VORSCHAU ZEIGEN
+                summary = json_data.get("text", "Hier ist der Plan:")
+                workouts = json_data.get("workouts", [])
+                
+                # 1. Text anzeigen
+                st.session_state.messages.append({"role": "model", "content": summary})
+                st.chat_message("assistant").write(summary)
+                
+                # 2. Tabelle anzeigen (Das ist die tabellarische Form!)
+                if workouts:
+                    df = pd.DataFrame(workouts)
                     st.dataframe(df, hide_index=True)
+                    # Wir speichern den DataFrame nicht im Chat-Verlauf (geht technisch schwer),
+                    # aber wir merken uns die Daten für den Upload.
+                    st.session_state.pending_plan = workouts
+                    st.info("Sage 'Passt', um das hochzuladen.")
                     
-                    st.info("Sage 'Passt' oder 'Hochladen', um diese Einheiten zu speichern.")
-                    
-                except Exception as e:
-                    st.error(f"Fehler beim Lesen des Plans: {e}")
-                    st.write(reply_text)
             else:
-                # Normale Textantwort
-                st.session_state.messages.append({"role": "model", "content": reply_text})
-                st.chat_message("assistant").write(reply_text)
+                # NORMALER TEXT / ANALYSE
+                st.session_state.messages.append({"role": "model", "content": reply})
+                st.chat_message("assistant").write(reply)
 
     except Exception as e:
         st.error(f"Fehler: {e}")
-
