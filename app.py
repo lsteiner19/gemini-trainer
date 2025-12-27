@@ -8,32 +8,48 @@ from datetime import datetime
 st.set_page_config(page_title="Mein Gemini Coach", page_icon="🚴")
 st.title("🚴 Mein Gemini Trainer")
 
-# --- 2. Keys automatisch laden (Secrets) ---
+# --- 2. Keys automatisch laden ---
 with st.sidebar:
     st.header("Einstellungen")
     
-    # Google Key prüfen
     if "GOOGLE_API_KEY" in st.secrets:
         google_api_key = st.secrets["GOOGLE_API_KEY"]
-        st.success("✅ Google Key automatisch geladen")
+        st.success("✅ Google Key geladen")
     else:
         google_api_key = st.text_input("Google API Key", type="password")
 
-    # Intervals ID prüfen
     if "INTERVALS_ID" in st.secrets:
         intervals_id = st.secrets["INTERVALS_ID"]
         st.success("✅ Athlete ID geladen")
     else:
-        intervals_id = st.text_input("Intervals Athlete ID (z.B. i12345)")
+        intervals_id = st.text_input("Intervals Athlete ID")
 
-    # Intervals Key prüfen
     if "INTERVALS_KEY" in st.secrets:
         intervals_key = st.secrets["INTERVALS_KEY"]
         st.success("✅ Intervals Key geladen")
     else:
         intervals_key = st.text_input("Intervals API Key", type="password")
 
-# --- 3. Funktion: Training an Intervals senden ---
+    # --- DIAGNOSE BUTTON (NEU) ---
+    st.divider()
+    if st.button("🛠️ Modelle prüfen (Diagnose)"):
+        if google_api_key:
+            try:
+                genai.configure(api_key=google_api_key)
+                st.write("Verfügbare Modelle:")
+                found = False
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        st.code(m.name) # Zeigt den exakten Namen an
+                        found = True
+                if not found:
+                    st.error("Keine Modelle gefunden. API Key prüfen?")
+            except Exception as e:
+                st.error(f"Fehler bei der Diagnose: {e}")
+        else:
+            st.warning("Erst Key eingeben!")
+
+# --- 3. Upload Funktion ---
 def upload_to_intervals(date_str, description, title, i_id, i_key):
     url = f"https://intervals.icu/api/v1/athlete/{i_id}/events"
     payload = {
@@ -49,74 +65,60 @@ def upload_to_intervals(date_str, description, title, i_id, i_key):
     except Exception as e:
         return 0, str(e)
 
-# --- 4. Der Chatbot ---
+# --- 4. Chat ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "model", "content": "Hi! Ich bin bereit. Was soll ich für dich planen?"}]
+    st.session_state.messages = [{"role": "model", "content": "Hi! Ich versuche es jetzt mit dem stabilen Modell. Was wollen wir planen?"}]
 
-# Alte Nachrichten anzeigen
 for msg in st.session_state.messages:
     role = "assistant" if msg["role"] == "model" else msg["role"]
     st.chat_message(role).write(msg["content"])
 
-# Eingabefeld unten
 prompt = st.chat_input("Z.B.: Plan mir 2h Zone 2 für morgen")
 
 if prompt:
-    # Sicherheitscheck
     if not google_api_key or not intervals_key or not intervals_id:
-        st.error("Es fehlen noch Keys! Bitte trage sie in den Streamlit 'Secrets' ein oder links in das Feld.")
+        st.error("Bitte Keys eingeben.")
         st.stop()
 
-    # User Nachricht anzeigen
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    # --- HIER IST DIE DEFINITION, DIE GEFEHLT HAT ---
     system_instruction = f"""
-    Du bist ein professioneller Radsport-Coach.
-    Heute ist der {datetime.today().strftime('%Y-%m-%d')}.
-    Der User möchte ein Training basierend auf: "{prompt}"
+    Du bist ein Radsport-Coach. Heute ist {datetime.today().strftime('%Y-%m-%d')}.
+    User-Wunsch: "{prompt}"
     
-    WICHTIG: Antworte AUSSCHLIESSLICH mit einem JSON-Objekt.
-    Format:
+    Antworte NUR als JSON:
     {{
-      "training_text": "Workout im Intervals-Format (z.B. 10m 50%...)", 
+      "training_text": "Workout-Text", 
       "datum": "YYYY-MM-DD",
       "titel": "Titel",
-      "user_antwort": "Deine Antwort an den User."
+      "user_antwort": "Text an User"
     }}
     """
-    # ------------------------------------------------
 
-    # Gemini konfigurieren
     genai.configure(api_key=google_api_key)
     
     try:
-        # Wir versuchen es mit dem Standard-Modell
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # ÄNDERUNG: Wir nutzen 'gemini-pro', das ist stabiler als flash
+        model = genai.GenerativeModel('gemini-pro')
         
         with st.spinner("Ich plane..."):
             response = model.generate_content(system_instruction)
-            text_response = response.text
-            
-            # JSON säubern
-            clean_json = text_response.replace("```json", "").replace("```", "").strip()
+            clean_json = response.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_json)
 
-            # Upload
             status, info = upload_to_intervals(data["datum"], data["training_text"], data["titel"], intervals_id, intervals_key)
 
             if status == 200:
-                reply = f"✅ **Erledigt!**\n\n{data['user_antwort']}\n\n*Eingetragen für: {data['datum']}*"
+                reply = f"✅ **Erledigt!**\n\n{data['user_antwort']}\n\n*Datum: {data['datum']}*"
             else:
-                reply = f"❌ Fehler beim Hochladen: {status} - {info}"
+                reply = f"❌ Intervals Fehler: {status} - {info}"
 
     except Exception as e:
-        reply = f"Ein Fehler ist aufgetreten: {e}"
-        # Falls das Modell nicht gefunden wird, geben wir einen Hinweis
+        reply = f"⚠️ Fehler: {e}"
+        # Automatische Diagnose im Fehlerfall
         if "404" in str(e):
-             reply += "\n\n**Tipp:** Wenn hier ein 404 Fehler steht, lösche die App auf Streamlit einmal komplett und erstelle sie neu, damit die Updates greifen."
+             reply += "\n\n**DIAGNOSE:** Ich konnte das Modell 'gemini-pro' nicht finden. Bitte klicke links auf 'Modelle prüfen' und sende dem Entwickler (mir), welche Namen dort stehen."
 
-    # Antwort anzeigen
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
