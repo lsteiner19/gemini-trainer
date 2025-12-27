@@ -31,11 +31,18 @@ with st.sidebar:
         intervals_key = st.text_input("Intervals API Key", type="password")
 
 # --- 3. Upload Funktion ---
+# --- 3. Upload Funktion (Repariert) ---
 def upload_to_intervals(date_str, description, title, i_id, i_key):
+    # FEHLERBEHEBUNG:
+    # Intervals braucht zwingend eine Uhrzeit (z.B. T09:00:00).
+    # Wenn die KI nur "2025-12-28" liefert, hängen wir automatisch 9 Uhr morgens an.
+    if "T" not in date_str:
+        date_str = f"{date_str}T09:00:00"
+    
     url = f"https://intervals.icu/api/v1/athlete/{i_id}/events"
     payload = {
         "category": "WORKOUT",
-        "start_date_local": date_str,
+        "start_date_local": date_str, # Jetzt mit Uhrzeit!
         "name": title,
         "description": description,
         "type": "Ride"
@@ -103,3 +110,4 @@ if prompt:
 
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
+
