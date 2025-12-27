@@ -241,7 +241,7 @@ with tab2:
         # C) KI ANFRAGE
         genai.configure(api_key=google_api_key)
         # Wir nutzen Gemini 2.0 Flash (kann Audio UND Text)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
 
         system_instruction = f"""
         Du bist ein Radsport-Coach. Datum: {datetime.today().strftime('%Y-%m-%d')}.
@@ -325,6 +325,7 @@ with tab2:
             
         st.session_state.messages.append({"role": "model", "content": final_text})
         st.chat_message("assistant").write(final_text)
+
 
 
 
