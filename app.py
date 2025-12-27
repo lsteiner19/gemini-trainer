@@ -203,7 +203,7 @@ if user_content:
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         
         parts = [system_prompt]
         if input_type == 'audio':
@@ -243,3 +243,4 @@ if user_content:
 
     except Exception as e:
         st.error(f"Fehler: {e}")
+
