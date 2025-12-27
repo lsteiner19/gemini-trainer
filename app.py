@@ -51,7 +51,7 @@ def upload_to_intervals(date_str, description, title, i_id, i_key):
 
 # --- 4. Der Chatbot ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "model", "content": "Hi! Ich kenne deine Keys jetzt. Was soll ich planen?"}]
+    st.session_state.messages = [{"role": "model", "content": "Hi! Ich bin bereit. Was soll ich für dich planen?"}]
 
 # Alte Nachrichten anzeigen
 for msg in st.session_state.messages:
@@ -71,46 +71,7 @@ if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    # Gemini konfigurieren (Nutzt 'gemini-pro' oder 'gemini-1.5-flash' je nach Verfügbarkeit)
-    genai.configure(api_key=google_api_key)
-    # Falls Flash wieder zickt, nutzen wir hier Pro:
-    # ... (der Code davor bleibt gleich) ...
-    
-    # Wir konfigurieren Gemini
-    genai.configure(api_key=google_api_key)
-    
-    # HIER IST DIE ÄNDERUNG: Wir nehmen die "latest" Version
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        
-        with st.spinner("Ich plane..."):
-            response = model.generate_content(system_instruction)
-            text_response = response.text
-            # ... (Rest des Codes wie vorher) ...
-            
-            clean_json = text_response.replace("```json", "").replace("```", "").strip()
-            data = json.loads(clean_json)
-
-            status, info = upload_to_intervals(data["datum"], data["training_text"], data["titel"], intervals_id, intervals_key)
-
-            if status == 200:
-                reply = f"✅ **Erledigt!**\n\n{data['user_antwort']}\n\n*Eingetragen für: {data['datum']}*"
-            else:
-                reply = f"❌ Fehler bei Intervals: {status} - {info}"
-                
-            st.session_state.messages.append({"role": "model", "content": reply})
-            st.chat_message("assistant").write(reply)
-
-    except Exception as e:
-        # Falls das Modell nicht gefunden wird, zeigen wir eine bessere Fehlermeldung
-        st.error(f"Fehler: {e}")
-        st.warning("Versuche, verfügbare Modelle aufzulisten...")
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    st.write(f"- {m.name}")
-        except:
-            pass
+    # --- HIER IST DIE DEFINITION, DIE GEFEHLT HAT ---
     system_instruction = f"""
     Du bist ein professioneller Radsport-Coach.
     Heute ist der {datetime.today().strftime('%Y-%m-%d')}.
@@ -119,21 +80,30 @@ if prompt:
     WICHTIG: Antworte AUSSCHLIESSLICH mit einem JSON-Objekt.
     Format:
     {{
-      "training_text": "Workout im Intervals-Format", 
+      "training_text": "Workout im Intervals-Format (z.B. 10m 50%...)", 
       "datum": "YYYY-MM-DD",
       "titel": "Titel",
       "user_antwort": "Deine Antwort an den User."
     }}
     """
+    # ------------------------------------------------
 
+    # Gemini konfigurieren
+    genai.configure(api_key=google_api_key)
+    
     try:
+        # Wir versuchen es mit dem Standard-Modell
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
         with st.spinner("Ich plane..."):
             response = model.generate_content(system_instruction)
             text_response = response.text
             
+            # JSON säubern
             clean_json = text_response.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_json)
 
+            # Upload
             status, info = upload_to_intervals(data["datum"], data["training_text"], data["titel"], intervals_id, intervals_key)
 
             if status == 200:
@@ -142,9 +112,11 @@ if prompt:
                 reply = f"❌ Fehler beim Hochladen: {status} - {info}"
 
     except Exception as e:
-        reply = f"Fehler: {e}"
+        reply = f"Ein Fehler ist aufgetreten: {e}"
+        # Falls das Modell nicht gefunden wird, geben wir einen Hinweis
+        if "404" in str(e):
+             reply += "\n\n**Tipp:** Wenn hier ein 404 Fehler steht, lösche die App auf Streamlit einmal komplett und erstelle sie neu, damit die Updates greifen."
 
+    # Antwort anzeigen
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
-
-
