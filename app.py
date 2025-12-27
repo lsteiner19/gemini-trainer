@@ -273,18 +273,32 @@ with tab2:
                 
                 if is_audio:
                     prompt_parts.append("Hier ist die Audio-Anfrage des Users:")
-                    prompt_parts.append(user_input) # Audio direkt an Gemini!
+                    
+                    # --- HIER WAR DER FEHLER ---
+                    # Wir müssen die Datei "auspacken" für Gemini
+                    audio_bytes = user_input.read()
+                    
+                    # Gemini braucht dieses exakte Format:
+                    audio_data = {
+                        "mime_type": user_input.type, # z.B. "audio/wav"
+                        "data": audio_bytes
+                    }
+                    prompt_parts.append(audio_data)
+                    # ---------------------------
+                    
                 else:
                     prompt_parts.append(f"User Anfrage: {user_input}")
 
+                # Anfrage senden
                 response = model.generate_content(prompt_parts)
                 clean_reply = response.text.replace("```json", "").replace("```", "").strip()
 
                 # JSON Parsen versuchen
                 final_text = clean_reply
                 try:
-                    if "{" in clean_reply: # Nur parsen wenn es wie JSON aussieht
-                        data = json.loads(clean_json)
+                    if "{" in clean_reply: 
+                        data = json.loads(clean_reply) # clean_reply statt clean_json nutzen
+                        
                         if data.get("action") == "create":
                             payload = {
                                 "category": data.get("category", "WORKOUT"),
@@ -299,15 +313,18 @@ with tab2:
                                 final_text = f"✅ **Ausgeführt:** {data['titel']} am {data['datum']}\n\n{data.get('text', '')}"
                             else:
                                 final_text = f"❌ Fehler bei Intervals: {txt}"
+                                
                         elif "text" in data:
                              final_text = data["text"]
-                except:
-                    pass # Wenn kein JSON, einfach Text ausgeben
+                except Exception as e:
+                    # Falls JSON-Parsing fehlschlägt, ist es wohl nur Text gewesen
+                    pass 
 
         except Exception as e:
             final_text = f"Fehler: {e}"
-
+            
         st.session_state.messages.append({"role": "model", "content": final_text})
         st.chat_message("assistant").write(final_text)
+
 
 
