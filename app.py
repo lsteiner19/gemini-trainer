@@ -210,7 +210,7 @@ if user_input:
     """
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash') # 1.5 Flash ist super stabil & günstig
+        model = genai.GenerativeModel('gemini-flash-latest') # 1.5 Flash ist super stabil & günstig
         
         prompt_content = [system_instruction]
         if is_audio:
@@ -252,3 +252,4 @@ if user_input:
 
     except Exception as e:
         st.error(f"Fehler: {e}")
+
