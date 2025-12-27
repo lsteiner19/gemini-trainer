@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- 1. Grundeinstellungen ---
 st.set_page_config(page_title="Mein Gemini Coach", page_icon="🚴")
-st.title("🚴 Mein Gemini Trainer")
+st.title("🚴 Mein Gemini Trainer (v2.0)")
 
 # --- 2. Keys automatisch laden ---
 with st.sidebar:
@@ -30,25 +30,6 @@ with st.sidebar:
     else:
         intervals_key = st.text_input("Intervals API Key", type="password")
 
-    # --- DIAGNOSE BUTTON (NEU) ---
-    st.divider()
-    if st.button("🛠️ Modelle prüfen (Diagnose)"):
-        if google_api_key:
-            try:
-                genai.configure(api_key=google_api_key)
-                st.write("Verfügbare Modelle:")
-                found = False
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        st.code(m.name) # Zeigt den exakten Namen an
-                        found = True
-                if not found:
-                    st.error("Keine Modelle gefunden. API Key prüfen?")
-            except Exception as e:
-                st.error(f"Fehler bei der Diagnose: {e}")
-        else:
-            st.warning("Erst Key eingeben!")
-
 # --- 3. Upload Funktion ---
 def upload_to_intervals(date_str, description, title, i_id, i_key):
     url = f"https://intervals.icu/api/v1/athlete/{i_id}/events"
@@ -67,7 +48,7 @@ def upload_to_intervals(date_str, description, title, i_id, i_key):
 
 # --- 4. Chat ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "model", "content": "Hi! Ich versuche es jetzt mit dem stabilen Modell. Was wollen wir planen?"}]
+    st.session_state.messages = [{"role": "model", "content": "Hi! Ich nutze jetzt Gemini 2.0 Flash. Was wollen wir planen?"}]
 
 for msg in st.session_state.messages:
     role = "assistant" if msg["role"] == "model" else msg["role"]
@@ -77,7 +58,7 @@ prompt = st.chat_input("Z.B.: Plan mir 2h Zone 2 für morgen")
 
 if prompt:
     if not google_api_key or not intervals_key or not intervals_id:
-        st.error("Bitte Keys eingeben.")
+        st.error("Bitte erst Keys eingeben!")
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -89,7 +70,7 @@ if prompt:
     
     Antworte NUR als JSON:
     {{
-      "training_text": "Workout-Text", 
+      "training_text": "Workout-Text für Intervals.icu", 
       "datum": "YYYY-MM-DD",
       "titel": "Titel",
       "user_antwort": "Text an User"
@@ -99,10 +80,10 @@ if prompt:
     genai.configure(api_key=google_api_key)
     
     try:
-        # ÄNDERUNG: Wir nutzen 'gemini-pro', das ist stabiler als flash
-        model = genai.GenerativeModel('gemini-pro')
+        # HIER IST DIE ÄNDERUNG: Wir nehmen exakt den Namen aus deiner Liste
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         
-        with st.spinner("Ich plane..."):
+        with st.spinner("Ich plane mit Gemini 2.0..."):
             response = model.generate_content(system_instruction)
             clean_json = response.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_json)
@@ -116,9 +97,9 @@ if prompt:
 
     except Exception as e:
         reply = f"⚠️ Fehler: {e}"
-        # Automatische Diagnose im Fehlerfall
+        # Fallback, falls er doch meckert
         if "404" in str(e):
-             reply += "\n\n**DIAGNOSE:** Ich konnte das Modell 'gemini-pro' nicht finden. Bitte klicke links auf 'Modelle prüfen' und sende dem Entwickler (mir), welche Namen dort stehen."
+             reply += "\n\n**Tipp:** Der Server braucht evtl. einen Neustart (Reboot), damit er Gemini 2.0 erkennt."
 
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
