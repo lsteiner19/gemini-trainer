@@ -74,7 +74,7 @@ if prompt:
     # Gemini konfigurieren (Nutzt 'gemini-pro' oder 'gemini-1.5-flash' je nach Verfügbarkeit)
     genai.configure(api_key=google_api_key)
     # Falls Flash wieder zickt, nutzen wir hier Pro:
-    model = genai.GenerativeModel('gemini-pro') 
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
     system_instruction = f"""
     Du bist ein professioneller Radsport-Coach.
@@ -111,3 +111,4 @@ if prompt:
 
     st.session_state.messages.append({"role": "model", "content": reply})
     st.chat_message("assistant").write(reply)
+
